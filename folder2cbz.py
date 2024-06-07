@@ -9,6 +9,8 @@ from datetime import datetime
 from PIL import Image
 import re
 from tqdm import tqdm
+import concurrent.futures
+import multiprocessing
 
 image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif', '.gif', '.tiff', '.tif']
 
@@ -67,9 +69,9 @@ def process_image(filepath, source_dir, target_dir, quality, max_resolution, ima
             target_height += 1
 
         if image_format == 'avif':
-            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-crf", str(quality), "-still-picture", "1", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
+            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-crf", str(quality), "-still-picture", "1", "-threads", "2", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
         elif image_format == 'webp':
-            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libwebp", "-lossless", "0", "-compression_level", "6", "-quality", str(quality), "-preset", preset, str(target_path), "-y", "-hide_banner", "-loglevel", "error"]
+            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libwebp", "-lossless", "0", "-compression_level", "6", "-quality", str(quality), "-preset", preset, "-threads", "2", str(target_path), "-y", "-hide_banner", "-loglevel", "error"]
 
         subprocess.run(cmd, stdout=subprocess.DEVNULL, check=True)
 
@@ -121,46 +123,53 @@ def get_img_dir_comb(source_dir):
             print(root)
     return dir_comb
 
-def process_comic_folder(source_dir, target_dir, quality, max_resolution, image_format, preset):
-    source_dir = Path(source_dir)
-    target_dir = Path(target_dir)
+def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset):
+    relative_comic_path = comic_source_dir.relative_to(source_dir)
+    comic_target_dir = target_dir / relative_comic_path
+
+    logging.info(f"Processing comic folder: {comic_source_dir}")
+
+    # Create a temporary directory to store AVIF/WebP images
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir_path = Path(temp_dir)
+
+        # Process each image in the comic folder
+        for file in comic_source_dir.iterdir():
+            if file.suffix.lower() in image_extensions:
+                process_image(file, comic_source_dir, temp_dir_path, quality, max_resolution, image_format, preset)
+
+        # Create CBZ file from the temporary directory
+        cbz_filename = relative_comic_path.with_suffix('.cbz')
+        cbz_path = target_dir / cbz_filename
+        cbz_path.parent.mkdir(parents=True, exist_ok=True)
+        compress_to_cbz(temp_dir_path, cbz_path)
+
+        # Set CBZ file's creation and modification dates to match the source directory
+        source_stat = comic_source_dir.stat()
+        os.utime(cbz_path, (source_stat.st_atime, source_stat.st_mtime))
+
+    logging.info(f"Finished processing comic folder: {comic_source_dir}")
+
+def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers):
+    source_dir = Path(input_dir)
+    target_dir = Path(output_dir)
 
     dir_comb = get_img_dir_comb(source_dir)
-            
-    for root, dirs, files in tqdm(dir_comb, desc='Processing comic folders', unit='folder',ncols=80):
-        comic_source_dir = Path(root)
-        relative_comic_path = comic_source_dir.relative_to(source_dir)
-        comic_target_dir = target_dir / relative_comic_path
+    
+    # Set environment variable for limiting threads
+    os.environ["OMP_NUM_THREADS"] = "1"
 
-        logging.info(f"Processing comic folder: {comic_source_dir}")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for (root, dirs, files) in tqdm(dir_comb, desc='Processing comic folders', unit='folder', ncols=80):
+            comic_source_dir = Path(root)
+            futures.append(executor.submit(process_comic_folder, comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset))
 
-        # Create a temporary directory to store AVIF/WebP images
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_dir_path = Path(temp_dir)
-
-            # Process each image in the comic folder
-            for file in files:
-                file_path = comic_source_dir / file
-                if file_path.suffix.lower() in image_extensions:
-                    process_image(file_path, comic_source_dir, temp_dir_path, quality, max_resolution, image_format, preset)
-                else:
-                    # Copy non-image files as is
-                    # target_non_image_path = temp_dir_path / file_path.relative_to(comic_source_dir)
-                    # target_non_image_path.parent.mkdir(parents=True, exist_ok=True)
-                    # shutil.copy2(str(file_path), str(target_non_image_path))
-                    pass
-
-            # Create CBZ file from the temporary directory
-            cbz_filename = relative_comic_path.with_suffix('.cbz')
-            cbz_path = target_dir / cbz_filename
-            cbz_path.parent.mkdir(parents=True, exist_ok=True)
-            compress_to_cbz(temp_dir_path, cbz_path)
-
-            # Set CBZ file's creation and modification dates to match the source directory
-            source_stat = comic_source_dir.stat()
-            os.utime(cbz_path, (source_stat.st_atime, source_stat.st_mtime))
-
-        logging.info(f"Finished processing comic folder: {comic_source_dir}")
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logging.error(f"An error occurred during the conversion process: {e}")
 
 if __name__ == "__main__":
     import argparse
@@ -175,11 +184,12 @@ if __name__ == "__main__":
     parser.add_argument("--max_resolution", type=int, default=3840*2160, help="Maximum resolution for images.")
     parser.add_argument("--format", type=str, choices=['avif', 'webp'], default='webp', help="Output image format: avif or webp.")
     parser.add_argument("--preset", type=str, choices=['default', 'picture', 'drawing', 'icon', 'text'], default='drawing', help="FFmpeg preset for WebP conversion.")
+    parser.add_argument("--max_workers", type=int, default=multiprocessing.cpu_count(), help="Number of worker processes to use for parallel processing.")
 
     args = parser.parse_args()
 
     try:
-        process_comic_folder(args.input_dir, args.output_dir, args.quality, args.max_resolution, args.format, args.preset)
+        main(args.input_dir, args.output_dir, args.quality, args.max_resolution, args.format, args.preset, args.max_workers)
         logging.info("Comic folder conversion process completed successfully.")
     except Exception as e:
         logging.error(f"An error occurred during the conversion process: {e}")

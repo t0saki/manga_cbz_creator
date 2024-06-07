@@ -110,13 +110,14 @@ def get_img_dir_comb(source_dir):
         files = [file for file in files if not '@' in file]
         if 'galleryinfo.txt' in files:
             files.remove('galleryinfo.txt')
-            if all(file.lower().endswith(tuple(image_extensions)) for file in files):
-                return True
+        if len(files) > 0 and all(file.lower().endswith(tuple(image_extensions)) for file in files):
+            return True
         return False
 
     for root, dirs, files in os.walk(source_dir):
-        if not dirs and is_imgfiles(files):
+        if is_imgfiles(files):
             dir_comb.append((root, dirs, files))
+            print(root)
     return dir_comb
 
 def process_comic_folder(source_dir, target_dir, quality, max_resolution, image_format, preset):

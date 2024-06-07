@@ -108,14 +108,15 @@ def get_img_dir_comb(source_dir):
     def is_imgfiles(files):
         files = files.copy()
         files = [file for file in files if not '@' in file]
-        if 'galleryinfo.txt' in files:
-            files.remove('galleryinfo.txt')
-        if len(files) > 0 and all(file.lower().endswith(tuple(image_extensions)) for file in files):
+        non_imgfiles = [file for file in files if not file.lower().endswith(tuple(image_extensions))]
+        if len(non_imgfiles) > 2:
+            return False
+        if len(files) > 0 and any(file.lower().endswith(tuple(image_extensions)) for file in files):
             return True
         return False
 
     for root, dirs, files in os.walk(source_dir):
-        if is_imgfiles(files):
+        if is_imgfiles(files) and not '@' in root:
             dir_comb.append((root, dirs, files))
             print(root)
     return dir_comb
@@ -144,9 +145,10 @@ def process_comic_folder(source_dir, target_dir, quality, max_resolution, image_
                     process_image(file_path, comic_source_dir, temp_dir_path, quality, max_resolution, image_format, preset)
                 else:
                     # Copy non-image files as is
-                    target_non_image_path = temp_dir_path / file_path.relative_to(comic_source_dir)
-                    target_non_image_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(file_path), str(target_non_image_path))
+                    # target_non_image_path = temp_dir_path / file_path.relative_to(comic_source_dir)
+                    # target_non_image_path.parent.mkdir(parents=True, exist_ok=True)
+                    # shutil.copy2(str(file_path), str(target_non_image_path))
+                    pass
 
             # Create CBZ file from the temporary directory
             cbz_filename = relative_comic_path.with_suffix('.cbz')

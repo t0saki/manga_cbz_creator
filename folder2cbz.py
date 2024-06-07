@@ -161,15 +161,19 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = []
-        for (root, dirs, files) in tqdm(dir_comb, desc='Processing comic folders', unit='folder', ncols=80):
-            comic_source_dir = Path(root)
-            futures.append(executor.submit(process_comic_folder, comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset))
+        with tqdm(total=len(dir_comb), desc='Processing comic folders', unit='folder', ncols=80) as pbar:
+            for (root, dirs, files) in dir_comb:
+                comic_source_dir = Path(root)
+                future = executor.submit(process_comic_folder, comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset)
+                futures.append(future)
 
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                logging.error(f"An error occurred during the conversion process: {e}")
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"An error occurred during the conversion process: {e}")
+                finally:
+                    pbar.update(1)
 
 if __name__ == "__main__":
     import argparse

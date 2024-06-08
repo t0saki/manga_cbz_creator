@@ -69,9 +69,9 @@ def process_image(filepath, source_dir, target_dir, quality, max_resolution, ima
             target_height += 1
 
         if image_format == 'avif':
-            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-crf", str(quality), "-still-picture", "1", "-threads", "2", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
+            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-crf", str(quality), "-still-picture", "1", "-threads", "1", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
         elif image_format == 'webp':
-            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libwebp", "-lossless", "0", "-compression_level", "6", "-quality", str(quality), "-preset", preset, "-threads", "2", str(target_path), "-y", "-hide_banner", "-loglevel", "error"]
+            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libwebp", "-lossless", "0", "-compression_level", "6", "-quality", str(quality), "-preset", preset, "-threads", "1", str(target_path), "-y", "-hide_banner", "-loglevel", "error"]
 
         subprocess.run(cmd, stdout=subprocess.DEVNULL, check=True)
 
@@ -123,6 +123,26 @@ def get_img_dir_comb(source_dir):
             print(root)
     return dir_comb
 
+def create_comicinfo_xml(comic_target_dir, mod_time, comic_title):
+    def extract_author(comic_title):
+        match = re.search(r'\[(.*?)\]', comic_title)
+        if match:
+            return match.group(1)
+        return None
+    author = extract_author(comic_title)
+    comicinfo_path = comic_target_dir / "ComicInfo.xml"
+    comicinfo_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="ComicInfo.xsd">
+  <Title>{comic_title}</Title>
+  <Writer>{author}</Writer>
+  <Year>{mod_time.year}</Year>
+  <Month>{mod_time.month}</Month>
+  <Day>{mod_time.day}</Day>
+</ComicInfo>
+"""
+    with comicinfo_path.open('w', encoding='utf-8') as file:
+        file.write(comicinfo_content)
+
 def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset):
     relative_comic_path = comic_source_dir.relative_to(source_dir)
     comic_target_dir = target_dir / relative_comic_path
@@ -134,9 +154,20 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
         temp_dir_path = Path(temp_dir)
 
         # Process each image in the comic folder
+        modification_times = []
         for file in comic_source_dir.iterdir():
             if file.suffix.lower() in image_extensions:
                 process_image(file, comic_source_dir, temp_dir_path, quality, max_resolution, image_format, preset)
+                modification_times.append(file.stat().st_mtime)
+
+        # Determine the latest modification time
+        if modification_times:
+            latest_mod_time = datetime.fromtimestamp(max(modification_times))
+        else:
+            latest_mod_time = datetime.now()  # Fallback if no images are found
+
+        # Create ComicInfo.xml file
+        create_comicinfo_xml(temp_dir_path, latest_mod_time, comic_source_dir.name)
 
         # Create CBZ file from the temporary directory
         cbz_filename = relative_comic_path.with_suffix('.cbz')
@@ -145,8 +176,7 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
         compress_to_cbz(temp_dir_path, cbz_path)
 
         # Set CBZ file's creation and modification dates to match the source directory
-        source_stat = comic_source_dir.stat()
-        os.utime(cbz_path, (source_stat.st_atime, source_stat.st_mtime))
+        os.utime(cbz_path, (latest_mod_time.timestamp(), latest_mod_time.timestamp()))
 
     logging.info(f"Finished processing comic folder: {comic_source_dir}")
 

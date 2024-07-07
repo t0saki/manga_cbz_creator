@@ -11,6 +11,7 @@ import re
 from tqdm import tqdm
 import concurrent.futures
 import multiprocessing
+import time
 
 image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif', '.gif', '.tiff', '.tif']
 
@@ -124,12 +125,7 @@ def get_img_dir_comb(source_dir):
     return dir_comb
 
 def create_comicinfo_xml(comic_target_dir, mod_time, comic_title):
-    def extract_author(comic_title):
-        match = re.search(r'\[(.*?)\]', comic_title)
-        if match:
-            return match.group(1)
-        return None
-    author = extract_author(comic_title)
+    
     comicinfo_path = comic_target_dir / "ComicInfo.xml"
     comicinfo_content = f"""<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="ComicInfo.xsd">
@@ -138,6 +134,21 @@ def create_comicinfo_xml(comic_target_dir, mod_time, comic_title):
   <Year>{mod_time.year}</Year>
   <Month>{mod_time.month}</Month>
   <Day>{mod_time.day}</Day>
+</ComicInfo>
+"""
+    with comicinfo_path.open('w', encoding='utf-8') as file:
+        file.write(comicinfo_content)
+
+def create_comicinfo_xml_galleryinfo(comic_target_dir, galleryinfo):
+    comicinfo_path = comic_target_dir / "ComicInfo.xml"
+    comicinfo_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="ComicInfo.xsd">
+    <Title>{galleryinfo['title']}</Title>
+    <Writer>{galleryinfo['author']}</Writer>
+    <Year>{galleryinfo['download_time'].year}</Year>
+    <Month>{galleryinfo['download_time'].month}</Month>
+    <Day>{galleryinfo['download_time'].day}</Day>
+    <Tags>{','.join(galleryinfo['tags'])}</Tags>
 </ComicInfo>
 """
     with comicinfo_path.open('w', encoding='utf-8') as file:
@@ -166,8 +177,34 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
         else:
             latest_mod_time = datetime.now()  # Fallback if no images are found
 
+        def extract_author(comic_title):
+            match = re.search(r'\[(.*?)\]', comic_title)
+            if match:
+                return match.group(1)
+            return None
+
+        author = extract_author(comic_title)
+        galleryinfo = {
+            'title': comic_source_dir.name,
+            'author': author,
+            'download_time': latest_mod_time,
+            'tags': []
+        }
+        # if galleryinfo.txt in comic_source_dir:
+        if (comic_source_dir / 'galleryinfo.txt').exists():
+            with open(comic_source_dir / 'galleryinfo.txt', 'r') as f:
+                for line in f:
+                    if line.startswith('Title:'):
+                        galleryinfo['title'] = line.split(':')[1].strip()
+                    elif line.startswith('Author:'):
+                        galleryinfo['author'] = line.split(':')[1].strip()
+                    elif line.startswith('Downloaded:'):
+                        galleryinfo['download_time'] = datetime.strptime(line.split(':')[1].strip(), '%Y-%m-%d %H:%M')
+                    elif line.startswith('Tags:'):
+                        galleryinfo['tags'] = line.split(':')[1].strip().split(',').strip()
+
         # Create ComicInfo.xml file
-        create_comicinfo_xml(temp_dir_path, latest_mod_time, comic_source_dir.name)
+        create_comicinfo_xml_galleryinfo(temp_dir_path, galleryinfo)
 
         # Create CBZ file from the temporary directory
         cbz_filename = relative_comic_path.with_suffix('.cbz')
@@ -180,15 +217,8 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
 
     logging.info(f"Finished processing comic folder: {comic_source_dir}")
 
-def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers):
-    source_dir = Path(input_dir)
-    target_dir = Path(output_dir)
 
-    dir_comb = get_img_dir_comb(source_dir)
-    
-    # Set environment variable for limiting threads
-    os.environ["OMP_NUM_THREADS"] = "1"
-
+def submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers):
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         with tqdm(total=len(dir_comb), desc='Processing comic folders', unit='folder', ncols=80) as pbar:
@@ -205,6 +235,60 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
                 finally:
                     pbar.update(1)
 
+def get_galleryinfo_dir_comb(source_dir, gallery_info):
+    dir_comb = []
+
+    def is_imgfiles(files):
+        files = files.copy()
+        files = [file for file in files if not '@' in file]
+        files = [file for file in files if not file.lower().endswith('.txt')]
+        non_imgfiles = [file for file in files if not file.lower().endswith(tuple(image_extensions))]
+        if len(non_imgfiles) > 2:
+            return False
+        if len(files) > 0 and any(file.lower().endswith(tuple(image_extensions)) for file in files):
+            return True
+        return False
+
+    for root, dirs, files in os.walk(source_dir):
+        if is_imgfiles(files) and not '@' in root and (Path(root) / gallery_info).exists() and not 'finished' in root:
+            dir_comb.append((root, dirs, files))
+            print(root)
+    return dir_comb
+
+def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers, gallery_info):
+    source_dir = Path(input_dir)
+    target_dir = Path(output_dir)
+    finished_dir = source_dir / 'finished'
+
+    os.environ["OMP_NUM_THREADS"] = "1"
+
+    if gallery_info:
+        finished_dir.mkdir(exist_ok=True)
+
+        run_count = 0
+        while True:
+            dir_comb = get_galleryinfo_dir_comb(source_dir, gallery_info)
+            if not dir_comb:
+                time.sleep(60)
+                continue
+
+            submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers)
+
+            for root, _, _ in dir_comb:
+                shutil.move(root, finished_dir / Path(root).name)
+                cbz_filename = Path(root).with_suffix('.cbz').name
+                shutil.copy(target_dir / cbz_filename, Path("/mnt/synology/res/komga/240607-all-aio/") / cbz_filename)
+
+            run_count += 1
+            logging.info(f"Gallery info conversion run {run_count} completed.")
+
+
+    else:
+        dir_comb = get_img_dir_comb(source_dir)
+    
+        submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -219,11 +303,12 @@ if __name__ == "__main__":
     parser.add_argument("--format", type=str, choices=['avif', 'webp'], default='webp', help="Output image format: avif or webp.")
     parser.add_argument("--preset", type=str, choices=['default', 'picture', 'drawing', 'icon', 'text'], default='drawing', help="FFmpeg preset for WebP conversion.")
     parser.add_argument("--max_workers", type=int, default=multiprocessing.cpu_count(), help="Number of worker processes to use for parallel processing.")
+    parser.add_argument("--gallery_info", type=str, help="Gallery info filename to trigger conversion process.")
 
     args = parser.parse_args()
 
     try:
-        main(args.input_dir, args.output_dir, args.quality, args.max_resolution, args.format, args.preset, args.max_workers)
+        main(args.input_dir, args.output_dir, args.quality, args.max_resolution, args.format, args.preset, args.max_workers, args.gallery_info)
         logging.info("Comic folder conversion process completed successfully.")
     except Exception as e:
         logging.error(f"An error occurred during the conversion process: {e}")

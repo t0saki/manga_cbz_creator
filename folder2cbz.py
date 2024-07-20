@@ -148,7 +148,7 @@ def create_comicinfo_xml_galleryinfo(comic_target_dir, galleryinfo):
     <Year>{galleryinfo['download_time'].year}</Year>
     <Month>{galleryinfo['download_time'].month}</Month>
     <Day>{galleryinfo['download_time'].day}</Day>
-    <Tags>{','.join(galleryinfo['tags'])}</Tags>
+    <Tags>{galleryinfo['tags']}</Tags>
 </ComicInfo>
 """
     with comicinfo_path.open('w', encoding='utf-8') as file:
@@ -183,25 +183,24 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
                 return match.group(1)
             return None
 
-        author = extract_author(comic_title)
         galleryinfo = {
             'title': comic_source_dir.name,
-            'author': author,
+            'author': extract_author(comic_source_dir.name),
             'download_time': latest_mod_time,
-            'tags': []
+            'tags': ""
         }
         # if galleryinfo.txt in comic_source_dir:
         if (comic_source_dir / 'galleryinfo.txt').exists():
             with open(comic_source_dir / 'galleryinfo.txt', 'r') as f:
                 for line in f:
                     if line.startswith('Title:'):
-                        galleryinfo['title'] = line.split(':')[1].strip()
+                        galleryinfo['title'] = line.split(':', 1)[1].strip()
                     elif line.startswith('Author:'):
-                        galleryinfo['author'] = line.split(':')[1].strip()
+                        galleryinfo['author'] = line.split(':', 1)[1].strip()
                     elif line.startswith('Downloaded:'):
-                        galleryinfo['download_time'] = datetime.strptime(line.split(':')[1].strip(), '%Y-%m-%d %H:%M')
+                        galleryinfo['download_time'] = datetime.strptime(line.split(':', 1)[1].strip(), '%Y-%m-%d %H:%M')
                     elif line.startswith('Tags:'):
-                        galleryinfo['tags'] = line.split(':')[1].strip().split(',').strip()
+                        galleryinfo['tags'] = line.split(':', 1)[1].strip()
 
         # Create ComicInfo.xml file
         create_comicinfo_xml_galleryinfo(temp_dir_path, galleryinfo)

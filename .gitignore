@@ -3,4 +3,5 @@ input
 output
 logs
 start.sh
+run.sh
 core

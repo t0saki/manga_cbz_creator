@@ -12,6 +12,7 @@ from tqdm import tqdm
 import concurrent.futures
 import multiprocessing
 import time
+import traceback
 
 image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif', '.gif', '.tiff', '.tif']
 
@@ -96,7 +97,8 @@ def process_image(filepath, source_dir, target_dir, quality, max_resolution, ima
         if temp_png_created:
             filepath.unlink()
     except Exception as e:
-        logging.error(f"Error processing image {filepath}: {e}")
+        error_message = traceback.format_exc()
+        logging.error(f"Error processing image {filepath}: {e}\n{error_message}")
 
 def compress_to_cbz(source_dir, cbz_path):
     with zipfile.ZipFile(cbz_path, 'w') as cbz:

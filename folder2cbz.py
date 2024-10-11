@@ -35,7 +35,7 @@ def setup_logging():
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
-def process_image(filepath, source_dir, target_dir, quality, max_resolution, image_format, preset):
+def process_image(filepath, source_dir, target_dir, quality, max_resolution, image_format, preset, color_depth):
     relative_path = filepath.relative_to(source_dir)
     target_path = target_dir / relative_path
     target_path = target_path.with_suffix(f'.{image_format}')
@@ -71,11 +71,19 @@ def process_image(filepath, source_dir, target_dir, quality, max_resolution, ima
             target_height += 1
 
         if image_format == 'avif':
-            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-crf", str(quality), "-still-picture", "1", "-threads", "1", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
+            if color_depth == 8:
+                pix_fmt = 'yuv420p'
+            elif color_depth == 10:
+                pix_fmt = 'yuv420p10le'
+            elif color_depth == 12:
+                pix_fmt = 'yuv420p12'
+
+            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-usage", "allintra","-pix_fmt", pix_fmt, "-crf", str(quality), "-preset", "4", "-still-picture", "1", "-threads", "1", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
         elif image_format == 'webp':
             cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libwebp", "-lossless", "0", "-compression_level", "6", "-quality", str(quality), "-preset", preset, "-threads", "1", str(target_path), "-y", "-hide_banner", "-loglevel", "error"]
 
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, check=True)
+        # subprocess.run(cmd, stdout=subprocess.DEVNULL, check=True)
+        assert cmd_runner(cmd)
 
         # Check if the image has DateTimeOriginal exif data using exiftool
         exiftool_process = subprocess.run(['exiftool', '-DateTimeOriginal', str(filepath), '-m'], capture_output=True, text=True)
@@ -99,6 +107,20 @@ def process_image(filepath, source_dir, target_dir, quality, max_resolution, ima
     except Exception as e:
         error_message = traceback.format_exc()
         logging.error(f"Error processing image {filepath}: {e}\n{error_message}")
+
+
+def cmd_runner(cmd):
+    try:
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result.check_returncode()  # 检查命令是否执行成功
+        return result
+    except subprocess.CalledProcessError:
+        logging.error(f"Error running command {cmd}: {result.stderr}")
+        return False
+    except Exception as e:
+        logging.error(f"Error running command {cmd}: {e}")
+        return False
 
 def compress_to_cbz(source_dir, cbz_path):
     with zipfile.ZipFile(cbz_path, 'w') as cbz:
@@ -156,7 +178,7 @@ def create_comicinfo_xml_galleryinfo(comic_target_dir, galleryinfo):
     with comicinfo_path.open('w', encoding='utf-8') as file:
         file.write(comicinfo_content)
 
-def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset):
+def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset, color_depth):
     relative_comic_path = comic_source_dir.relative_to(source_dir)
     comic_target_dir = target_dir / relative_comic_path
 
@@ -170,7 +192,7 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
         modification_times = []
         for file in comic_source_dir.iterdir():
             if file.suffix.lower() in image_extensions:
-                process_image(file, comic_source_dir, temp_dir_path, quality, max_resolution, image_format, preset)
+                process_image(file, comic_source_dir, temp_dir_path, quality, max_resolution, image_format, preset, color_depth)
                 modification_times.append(file.stat().st_mtime)
 
         # Determine the latest modification time
@@ -219,13 +241,13 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
     logging.info(f"Finished processing comic folder: {comic_source_dir}")
 
 
-def submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers):
+def submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers, color_depth):
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         with tqdm(total=len(dir_comb), desc='Processing comic folders', unit='folder', ncols=80) as pbar:
             for (root, dirs, files) in dir_comb:
                 comic_source_dir = Path(root)
-                future = executor.submit(process_comic_folder, comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset)
+                future = executor.submit(process_comic_folder, comic_source_dir, source_dir, target_dir, quality, max_resolution, image_format, preset, color_depth)
                 futures.append(future)
 
             for future in concurrent.futures.as_completed(futures):
@@ -256,7 +278,7 @@ def get_galleryinfo_dir_comb(source_dir, gallery_info):
             print(root)
     return dir_comb
 
-def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers, gallery_info):
+def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers, gallery_info, color_depth):
     source_dir = Path(input_dir)
     target_dir = Path(output_dir)
     finished_dir = source_dir / 'finished'
@@ -273,12 +295,14 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
                 time.sleep(60)
                 continue
 
-            submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers)
+            submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers, color_depth)
 
             for root, _, _ in dir_comb:
                 shutil.move(root, finished_dir / Path(root).name)
-                cbz_filename = Path(root).with_suffix('.cbz').name
-                shutil.copy(target_dir / cbz_filename, Path("/mnt/synology/res/komga/240607-all-aio/") / cbz_filename)
+                
+                if 'ehentai-daemon' in output_dir:
+                    cbz_filename = Path(root).with_suffix('.cbz').name
+                    shutil.copy(target_dir / cbz_filename, Path("/mnt/synology/res/komga/240607-all-aio/") / cbz_filename)
 
             run_count += 1
             logging.info(f"Gallery info conversion run {run_count} completed.")
@@ -287,7 +311,7 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
     else:
         dir_comb = get_img_dir_comb(source_dir)
     
-        submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers)
+        submit_dir_comb(dir_comb, source_dir, target_dir, quality, max_resolution, image_format, preset, max_workers, color_depth)
 
 
 if __name__ == "__main__":
@@ -299,17 +323,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert comic folders to AVIF/WebP CBZ format.")
     parser.add_argument("input_dir", type=str, help="The input directory containing comic folders.")
     parser.add_argument("output_dir", type=str, help="The output directory to save the CBZ files.")
-    parser.add_argument("--quality", type=int, default=80, help="CRF/quality value for AVIF/WebP conversion.")
+    parser.add_argument("--quality", type=int, default=35, help="CRF/quality value for AVIF/WebP conversion.")
     parser.add_argument("--max_resolution", type=int, default=3840*2160, help="Maximum resolution for images.")
-    parser.add_argument("--format", type=str, choices=['avif', 'webp'], default='webp', help="Output image format: avif or webp.")
+    parser.add_argument("--format", type=str, choices=['avif', 'webp'], default='avif', help="Output image format: avif or webp.")
     parser.add_argument("--preset", type=str, choices=['default', 'picture', 'drawing', 'icon', 'text'], default='drawing', help="FFmpeg preset for WebP conversion.")
     parser.add_argument("--max_workers", type=int, default=multiprocessing.cpu_count(), help="Number of worker processes to use for parallel processing.")
     parser.add_argument("--gallery_info", type=str, help="Gallery info filename to trigger conversion process.")
+    parser.add_argument("--color_depth", type=int, choices=[8, 10, 12], default=10, help="Color depth for AVIF conversion.")
 
     args = parser.parse_args()
 
     try:
-        main(args.input_dir, args.output_dir, args.quality, args.max_resolution, args.format, args.preset, args.max_workers, args.gallery_info)
+        main(args.input_dir, args.output_dir, args.quality, args.max_resolution, args.format, args.preset, args.max_workers, args.gallery_info, args.color_depth)
         logging.info("Comic folder conversion process completed successfully.")
     except Exception as e:
         logging.error(f"An error occurred during the conversion process: {e}")

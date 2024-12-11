@@ -78,7 +78,7 @@ def process_image(filepath, source_dir, target_dir, quality, max_resolution, ima
             elif color_depth == 12:
                 pix_fmt = 'yuv420p12'
 
-            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-usage", "allintra","-pix_fmt", pix_fmt, "-crf", str(quality), "-preset", "4", "-still-picture", "1", "-threads", "1", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
+            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-usage", "allintra","-pix_fmt", pix_fmt, "-crf", str(quality), "-preset", "1", "-still-picture", "1", "-threads", "1", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
         elif image_format == 'webp':
             cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libwebp", "-lossless", "0", "-compression_level", "6", "-quality", str(quality), "-preset", preset, "-threads", "1", str(target_path), "-y", "-hide_banner", "-loglevel", "error"]
 
@@ -302,7 +302,7 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
                 
                 if 'ehentai-daemon' in output_dir:
                     cbz_filename = Path(root).with_suffix('.cbz').name
-                    shutil.copy(target_dir / cbz_filename, Path("/mnt/synology/res/komga/240607-all-aio/") / cbz_filename)
+                    shutil.move(target_dir / cbz_filename, Path("/mnt/synology/res/komga/240607-all-aio/") / cbz_filename)
 
             run_count += 1
             logging.info(f"Gallery info conversion run {run_count} completed.")

@@ -134,7 +134,7 @@ def get_img_dir_comb(source_dir):
 
     def is_imgfiles(files):
         files = files.copy()
-        files = [file for file in files if not '@' in file]
+        files = [file for file in files if not ('@eaDir' in file or '@Recycle' in file)]
         non_imgfiles = [file for file in files if not file.lower().endswith(tuple(image_extensions))]
         if len(non_imgfiles) > 2:
             return False

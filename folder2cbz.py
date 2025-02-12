@@ -366,7 +366,7 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
             if not dir_comb:
                 if last_modified:
                     scan_library_with_env()
-                    last_modified = Falseß
+                    last_modified = False
 
                 time.sleep(60)
                 continue

@@ -293,8 +293,11 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
         # Create ComicInfo.xml file
         create_comicinfo_xml_galleryinfo(temp_dir_path, galleryinfo)
 
-        # Create CBZ file from the temporary directory
-        cbz_filename = relative_comic_path.with_suffix('.cbz')
+        # Create CBZ file from the temporary directory# 原代码
+        # cbz_filename = relative_comic_path.with_suffix('.cbz')
+
+        # 修改后代码
+        cbz_filename = relative_comic_path.with_name(relative_comic_path.name + ".cbz")
         cbz_path = target_dir / cbz_filename
         cbz_path.parent.mkdir(parents=True, exist_ok=True)
         compress_to_cbz(temp_dir_path, cbz_path)
@@ -378,7 +381,11 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
                 shutil.move(root, finished_dir / Path(root).name)
 
                 if 'ehentai-daemon' in output_dir:
-                    cbz_filename = Path(root).with_suffix('.cbz').name
+                    # 原代码
+                    # cbz_filename = Path(root).with_suffix('.cbz').name
+
+                    # 修改为
+                    cbz_filename = f"{Path(root).name}.cbz"  # 直接构造文件名
                     shutil.move(target_dir / cbz_filename,
                                 Path("/mnt/synology/res/komga/240607-all-aio/") / cbz_filename)
 

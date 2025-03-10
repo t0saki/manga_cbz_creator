@@ -46,8 +46,9 @@ def scan_library_with_env():
     env_vars = {
         'base_url': os.getenv('KOMGA_BASE_URL'),
         'library_id': os.getenv('KOMGA_LIBRARY_ID'),
-        'session': os.getenv('KOMGA_SESSION'),
-        'remember_me': os.getenv('KOMGA_REMEMBER_ME'),
+        # 'session': os.getenv('KOMGA_SESSION'),
+        # 'remember_me': os.getenv('KOMGA_REMEMBER_ME'),
+        'api_key': os.getenv('KOMGA_API_KEY'),
     }
 
     # 验证必要参数
@@ -59,8 +60,9 @@ def scan_library_with_env():
         # 构造请求组件
         url = f"{env_vars['base_url']}/api/v1/libraries/{env_vars['library_id']}/scan"
         headers = {
-            "Cookie": f"SESSION={env_vars['session']}; remember-me={env_vars['remember_me']}",
-            "User-Agent": "KomgaScanner/1.0"
+            # "Cookie": f"SESSION={env_vars['session']}; remember-me={env_vars['remember_me']}",
+            "X-API-Key": env_vars['api_key'],
+            "User-Agent": "KomgaConverter/1.0"
         }
 
         response = requests.post(url, headers=headers)

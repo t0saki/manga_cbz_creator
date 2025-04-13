@@ -306,87 +306,72 @@ def process_comic_folder(comic_source_dir, source_dir, target_dir, quality, max_
         temp_dir_path = Path(temp_dir)
 
         # Process each image in the comic folder
-        processed_image_count = 0
+        modification_times = []
         for file in comic_source_dir.iterdir():
-             if file.is_file() and file.suffix.lower() in image_extensions: # Check if file
+            if file.is_file() and file.suffix.lower() in image_extensions:
                 process_image(file, comic_source_dir, temp_dir_path, quality,
                               max_resolution, image_format, preset, color_depth)
-                processed_image_count += 1
+                modification_times.append(file.stat().st_mtime)
 
-        if processed_image_count == 0:
-            logging.warning(f"No images found or processed in {comic_source_dir}. Skipping CBZ creation.")
-            return
+        # Determine the latest modification time
+        if modification_times:
+            latest_mod_time = datetime.fromtimestamp(max(modification_times))
+        else:
+            latest_mod_time = datetime.now()  # Fallback if no images are found
 
-        # Determine the comic date using the new helper function
-        comic_date = get_comic_date(comic_source_dir)
-
-        # --- galleryinfo handling ---
-        galleryinfo = {
-            'title': comic_source_dir.name,
-            'author': None, # Default to None
-            'download_time': comic_date, # Use determined date
-            'tags': ""
-        }
-
-        # Extract author from title as fallback if not in galleryinfo.txt
         def extract_author(comic_title):
             match = re.search(r'\[(.*?)\]', comic_title)
             if match:
-                author = match.group(1).strip()
-                # Avoid setting author if it looks like metadata e.g., [Digital]
-                if len(author) > 1 and not author.lower() in ['digital', 'ongoing', 'dl版']:
-                     return author
+                return match.group(1)
             return None
 
-        galleryinfo['author'] = extract_author(comic_source_dir.name) # Fallback author
-
-        galleryinfo_file = comic_source_dir / 'galleryinfo.txt'
-        if galleryinfo_file.exists():
+        galleryinfo = {
+            'title': comic_source_dir.name,
+            'author': extract_author(comic_source_dir.name),
+            'download_time': latest_mod_time,
+            'tags': ""
+        }
+        
+        if (comic_source_dir / 'galleryinfo.txt').exists():
             try:
-                with open(galleryinfo_file, 'r', encoding='utf-8') as f: # Added encoding
+                with open(comic_source_dir / 'galleryinfo.txt', 'r', encoding='utf-8') as f:
                     for line in f:
                         if line.startswith('Title:'):
                             galleryinfo['title'] = line.split(':', 1)[1].strip()
                         elif line.startswith('Author:'):
-                            # Prioritize author from file if present and not empty
-                            author_from_file = line.split(':', 1)[1].strip()
-                            if author_from_file:
-                                galleryinfo['author'] = author_from_file
+                            galleryinfo['author'] = line.split(':', 1)[1].strip()
+                        elif line.startswith('Downloaded:'):
+                            try:
+                                galleryinfo['download_time'] = datetime.strptime(
+                                    line.split(':', 1)[1].strip(), '%Y-%m-%d %H:%M')
+                            except ValueError:
+                                logging.warning(f"Could not parse date from galleryinfo.txt. Using file modification time.")
                         elif line.startswith('Tags:'):
                             galleryinfo['tags'] = line.split(':', 1)[1].strip()
             except Exception as e:
-                logging.warning(f"Could not read galleryinfo.txt from {comic_source_dir}: {e}")
-
-        # If author is still None, set to empty string for ComicInfo
-        if galleryinfo['author'] is None:
-            galleryinfo['author'] = ""
-
+                logging.warning(f"Error reading galleryinfo.txt: {e}. Using defaults.")
 
         # Create ComicInfo.xml file
         create_comicinfo_xml_galleryinfo(temp_dir_path, galleryinfo)
 
-
         # --- CBZ path calculation ---
         cbz_base_filename = f"{relative_comic_path.name}.cbz"
 
+        # Use organize_by_date if enabled, but keep using latest_mod_time for organization
         if organize_by_date:
+            comic_date = get_comic_date(comic_source_dir)  # Use new function for directory structure only
             year = comic_date.strftime('%Y')
             month = comic_date.strftime('%m')
             cbz_path = target_dir / year / month / cbz_base_filename
         else:
             cbz_path = target_dir / cbz_base_filename
 
-        cbz_path.parent.mkdir(parents=True, exist_ok=True) # Ensure directory exists
-
+        cbz_path.parent.mkdir(parents=True, exist_ok=True)
         compress_to_cbz(temp_dir_path, cbz_path)
 
-        # Set CBZ file's creation and modification dates to match the comic date
-        try:
-            os.utime(cbz_path, (comic_date.timestamp(),
-                                comic_date.timestamp()))
-        except Exception as e:
-            logging.warning(f"Could not set modification time for {cbz_path}: {e}")
-
+        # Set CBZ file's creation and modification dates to match the source directory
+        # Keep using the original timestamp logic
+        os.utime(cbz_path, (latest_mod_time.timestamp(), latest_mod_time.timestamp()))
 
     logging.info(f"Finished processing comic folder: {comic_source_dir}")
 
@@ -478,57 +463,53 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
 
             # Move processed folders and CBZ files *after* the batch is done
             for root_path in processed_roots:
-                 # --- Move source folder ---
+                # --- Move source folder ---
                 try:
                     target_finished_path = finished_dir / root_path.name
                     # Handle potential name collisions in finished dir (though unlikely with unique folder names)
                     if target_finished_path.exists():
-                         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                         target_finished_path = finished_dir / f"{root_path.name}_{timestamp}"
-                         logging.warning(f"Target finished path {finished_dir / root_path.name} exists. Moving source to {target_finished_path}")
+                        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                        target_finished_path = finished_dir / f"{root_path.name}_{timestamp}"
+                        logging.warning(f"Target finished path {finished_dir / root_path.name} exists. Moving source to {target_finished_path}")
                     shutil.move(str(root_path), target_finished_path) # Use str() for compatibility potentially
                     logging.info(f"Moved source folder {root_path} to {target_finished_path}")
                 except Exception as e:
-                     logging.error(f"Error moving source folder {root_path} to finished: {e}")
-                     continue # Skip CBZ moving if source move failed
+                    logging.error(f"Error moving source folder {root_path} to finished: {e}")
+                    continue # Skip CBZ moving if source move failed
 
-                 # --- Move CBZ file (if applicable) ---
+                # --- Move CBZ file (if applicable) ---
                 if 'ehentai-daemon' in output_dir: # Check if the specific output logic applies
                     try:
-                        # Determine date for path construction
-                        comic_date = get_comic_date(target_finished_path) # Use moved path to get date again
-
                         # Construct CBZ filename
                         cbz_filename = f"{root_path.name}.cbz"
 
                         # Construct source CBZ path (potentially with date structure)
+                        source_cbz_path = target_dir / cbz_filename
                         if organize_by_date:
+                            # For finding the source file, we need to use get_comic_date
+                            comic_date = get_comic_date(target_finished_path)
                             year = comic_date.strftime('%Y')
                             month = comic_date.strftime('%m')
-                            source_cbz_path = target_dir / year / month / cbz_filename
-                            final_dest_dir = target_dir / year / month
+                            final_dest_dir = Path("/mnt/synology/res/komga/Doujinsh-Lib-Era/") / year / month
                         else:
-                            source_cbz_path = target_dir / cbz_filename
-                            final_dest_dir = target_dir
+                            final_dest_dir = Path("/mnt/synology/res/komga/Doujinsh-Lib-Era/")
 
                         final_cbz_path = final_dest_dir / cbz_filename
 
                         if source_cbz_path.exists():
-                             final_dest_dir.mkdir(parents=True, exist_ok=True) # Ensure final destination exists
-                             shutil.move(str(source_cbz_path), final_cbz_path)
-                             logging.info(f"Moved CBZ {source_cbz_path} to {final_cbz_path}")
+                            final_dest_dir.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(source_cbz_path), final_cbz_path)
+                            logging.info(f"Moved CBZ {source_cbz_path} to {final_cbz_path}")
                         else:
-                             logging.warning(f"CBZ file {source_cbz_path} not found for moving.")
+                            logging.warning(f"CBZ file {source_cbz_path} not found for moving.")
 
                     except Exception as e:
                         logging.error(f"Error moving CBZ for {root_path.name}: {e}")
-
 
             run_count += 1
             scan_needed = True # Set flag to scan after this batch
             logging.info(f"Gallery info conversion run {run_count} completed for {len(processed_roots)} folders.")
             # Removed time.sleep here, will sleep at the start of the loop if nothing is found
-
 
     else: # Handle case without --gallery_info
         dir_comb = get_img_dir_comb(source_dir)

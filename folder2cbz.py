@@ -484,14 +484,15 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
                         cbz_filename = f"{root_path.name}.cbz"
 
                         # Construct source CBZ path (potentially with date structure)
-                        source_cbz_path = target_dir / cbz_filename
                         if organize_by_date:
                             # For finding the source file, we need to use get_comic_date
                             comic_date = get_comic_date(target_finished_path)
                             year = comic_date.strftime('%Y')
                             month = comic_date.strftime('%m')
+                            source_cbz_path = target_dir / year / month / cbz_filename
                             final_dest_dir = Path("/mnt/synology/res/komga/Doujinsh-Lib-Era/") / year / month
                         else:
+                            source_cbz_path = target_dir / cbz_filename
                             final_dest_dir = Path("/mnt/synology/res/komga/Doujinsh-Lib-Era/")
 
                         final_cbz_path = final_dest_dir / cbz_filename

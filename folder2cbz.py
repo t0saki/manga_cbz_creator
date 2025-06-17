@@ -444,10 +444,10 @@ def get_galleryinfo_dir_comb(source_dir, gallery_info):
 
 def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers, gallery_info, color_depth, organize_by_date, delete_source_targz):
     """
-    主函数，修改为轮询 .tar.gz 文件。
+    主函数，修改为轮询 .tar.gz 文件，并在临时目录中生成CBZ，成功后再移动。
     """
     source_dir = Path(input_dir)
-    target_dir = Path(output_dir)
+    final_target_dir = Path(output_dir) # 最终的输出目录
     os.environ["OMP_NUM_THREADS"] = "1"
     
     run_count = 0
@@ -476,11 +476,17 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
         for targz_path in targz_files_to_process:
             logging.info(f"--- Processing archive: {targz_path.name} ---")
             
-            with tempfile.TemporaryDirectory() as temp_extract_dir:
-                temp_extract_path = Path(temp_extract_dir)
-                
+            # 创建一个主临时目录，所有操作都在其中进行
+            with tempfile.TemporaryDirectory(prefix="comic_process_") as main_temp_dir:
+                main_temp_path = Path(main_temp_dir)
+                temp_extract_path = main_temp_path / "extracted"
+                temp_cbz_output_path = main_temp_path / "cbz_output" # CBZ的临时生成目录
+
+                temp_extract_path.mkdir()
+                temp_cbz_output_path.mkdir()
+
                 try:
-                    # 解压 .tar.gz 到临时目录
+                    # 1. 解压 .tar.gz 到临时解压目录
                     logging.info(f"Extracting {targz_path.name} to temporary directory...")
                     shutil.unpack_archive(targz_path, temp_extract_path)
                     
@@ -494,11 +500,30 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
                         comic_source_dir = temp_extract_path
                         logging.info("Content found directly in extraction root.")
 
-                    # 调用你现有的核心处理函数 process_comic_folder
-                    # 注意：这里的 `source_dir` 参数只是为了计算相对路径，我们传入解压的临时目录的父目录
-                    process_comic_folder(comic_source_dir, comic_source_dir.parent, target_dir, quality, 
+                    # 2. 调用核心处理函数，但将输出目标(target_dir)指向我们的临时CBZ目录
+                    logging.info(f"Generating CBZ in temporary location: {temp_cbz_output_path}")
+                    process_comic_folder(comic_source_dir, comic_source_dir.parent, temp_cbz_output_path, quality, 
                                          max_resolution, image_format, preset, color_depth, organize_by_date)
+                    
+                    # 3. 移动在临时目录中生成的 CBZ 文件到最终目标
+                    # process_comic_folder 会根据 organize_by_date 在 temp_cbz_output_path 下创建子目录和CBZ文件
+                    # 我们需要找到它创建的那个文件
+                    generated_files = list(temp_cbz_output_path.rglob('*.cbz'))
+                    if not generated_files:
+                        raise FileNotFoundError("CBZ file was not generated in the temporary directory.")
+                    
+                    source_cbz_path = generated_files[0] # 假设只生成一个CBZ
+                    # 计算最终目标路径，保留由 organize_by_date 创建的子目录结构
+                    relative_cbz_path = source_cbz_path.relative_to(temp_cbz_output_path)
+                    final_cbz_path = final_target_dir / relative_cbz_path
 
+                    # 确保最终目标目录存在
+                    final_cbz_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    logging.info(f"Moving temporary CBZ '{source_cbz_path.name}' to final destination '{final_cbz_path}'")
+                    shutil.move(str(source_cbz_path), str(final_cbz_path))
+                    
+                    # 4. (可选) 删除原始的 .tar.gz 文件
                     logging.info(f"Successfully processed content from {targz_path.name}")
                     
                     # 如果配置了处理后删除，则删除原始的 .tar.gz 文件
@@ -510,21 +535,16 @@ def main(input_dir, output_dir, quality, max_resolution, image_format, preset, m
                             logging.error(f"Failed to delete source archive {targz_path.name}: {e}")
                             
                 except Exception as e:
-                    logging.error(f"An error occurred while processing archive {targz_path.name}: {e}")
-                    # 可选：如果处理失败，可以将失败的文件移动到错误目录而不是删除
-                    # error_dir = source_dir / 'failed'
-                    # error_dir.mkdir(exist_ok=True)
-                    # shutil.move(targz_path, error_dir / targz_path.name)
-                    continue # 继续处理下一个文件
-            
-            # --- 不再需要移动源文件夹或CBZ文件的逻辑 ---
-            # 因为CBZ文件在 process_comic_folder 中已经直接生成到了最终的 output_dir。
-            # 原始的tar.gz已被处理和（可选）删除。
+                    error_message = traceback.format_exc()
+                    logging.error(f"An error occurred while processing archive {targz_path.name}: {e}\n{error_message}")
+                    error_dir = source_dir / 'failed'
+                    error_dir.mkdir(exist_ok=True)
+                    shutil.move(str(targz_path), str(error_dir / targz_path.name))
+                    continue 
 
         run_count += 1
         scan_needed = True # 标记在下一轮空闲时需要扫描
         logging.info(f"Processing run {run_count} completed for {len(targz_files_to_process)} archive(s).")
-        # 处理完一批后立即开始下一轮扫描，而不是等待
 
 if __name__ == "__main__":
     import argparse

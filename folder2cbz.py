@@ -38,6 +38,21 @@ def setup_logging():
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
+def get_targz_files(directory):
+    """
+    扫描指定目录，返回所有.tar.gz文件的列表。
+    """
+    source_path = Path(directory)
+    if not source_path.is_dir():
+        logging.warning(f"Source directory for tar.gz files does not exist: {directory}")
+        return []
+    
+    targz_files = [f for f in source_path.iterdir() if f.is_file() and f.name.endswith('.tar.gz')]
+    
+    if targz_files:
+        logging.info(f"Found {len(targz_files)} .tar.gz file(s) to process.")
+        
+    return targz_files
 
 def scan_library_with_env():
     """从环境变量读取配置并触发扫描的完整实现"""
@@ -422,106 +437,94 @@ def get_galleryinfo_dir_comb(source_dir, gallery_info):
             dir_comb.append((root, dirs, files))
             # print(root) # Optional: uncomment for debugging
     # Log the number of directories found
-    logging.info(f"Found {len(dir_comb)} directories with '{gallery_info}' to process.")
+    if len(dir_comb):
+        logging.info(f"Found {len(dir_comb)} directories with '{gallery_info}' to process.")
     return dir_comb
 
 
-def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers, gallery_info, color_depth, organize_by_date):
+def main(input_dir, output_dir, quality, max_resolution, image_format, preset, max_workers, gallery_info, color_depth, organize_by_date, delete_source_targz):
+    """
+    主函数，修改为轮询 .tar.gz 文件。
+    """
     source_dir = Path(input_dir)
     target_dir = Path(output_dir)
-    finished_dir = source_dir / 'finished'
-
     os.environ["OMP_NUM_THREADS"] = "1"
+    
+    run_count = 0
+    scan_needed = False
 
-    if gallery_info:
-        finished_dir.mkdir(exist_ok=True)
+    logging.info(f"Starting to poll for .tar.gz files in: {source_dir}")
 
-        run_count = 0
-        last_modified = False
-        scan_needed = False # Flag to trigger scan only once after a batch
-        while True:
-            dir_comb = get_galleryinfo_dir_comb(source_dir, gallery_info)
-            if not dir_comb:
-                if scan_needed:
-                    try:
-                        scan_library_with_env()
-                    except Exception as e:
-                         logging.error(f"Failed to trigger Komga scan: {e}")
-                    scan_needed = False # Reset flag after attempting scan
+    while True:
+        # 1. 扫描输入目录寻找 .tar.gz 文件
+        targz_files_to_process = get_targz_files(source_dir)
 
-                logging.info(f"No new folders with {gallery_info} found. Waiting...")
-                time.sleep(60)
-                continue
-
-            # Process the found folders
-            submit_dir_comb(dir_comb, source_dir, target_dir, quality,
-                            max_resolution, image_format, preset, max_workers, color_depth, organize_by_date)
-
-            processed_roots = [] # Keep track of successfully processed roots
-            for root, _, _ in dir_comb:
-                processed_roots.append(Path(root)) # Add path for later use
-
-            # Move processed folders and CBZ files *after* the batch is done
-            for root_path in processed_roots:
-                # --- Move source folder ---
+        if not targz_files_to_process:
+            # 如果之前处理过文件，现在没有了，就触发一次Komga扫描
+            if scan_needed:
                 try:
-                    target_finished_path = finished_dir / root_path.name
-                    # Handle potential name collisions in finished dir (though unlikely with unique folder names)
-                    if target_finished_path.exists():
-                        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                        target_finished_path = finished_dir / f"{root_path.name}_{timestamp}"
-                        logging.warning(f"Target finished path {finished_dir / root_path.name} exists. Moving source to {target_finished_path}")
-                    shutil.move(str(root_path), target_finished_path) # Use str() for compatibility potentially
-                    logging.info(f"Moved source folder {root_path} to {target_finished_path}")
+                    scan_library_with_env()
                 except Exception as e:
-                    logging.error(f"Error moving source folder {root_path} to finished: {e}")
-                    continue # Skip CBZ moving if source move failed
+                    logging.error(f"Failed to trigger Komga scan: {e}")
+                scan_needed = False # 重置扫描标记
+            
+            # 等待一段时间再检查
+            time.sleep(60)
+            continue
+        
+        # 2. 批量处理找到的 .tar.gz 文件
+        for targz_path in targz_files_to_process:
+            logging.info(f"--- Processing archive: {targz_path.name} ---")
+            
+            with tempfile.TemporaryDirectory() as temp_extract_dir:
+                temp_extract_path = Path(temp_extract_dir)
+                
+                try:
+                    # 解压 .tar.gz 到临时目录
+                    logging.info(f"Extracting {targz_path.name} to temporary directory...")
+                    shutil.unpack_archive(targz_path, temp_extract_path)
+                    
+                    # shutil.unpack_archive 可能会将内容直接解压到目录，或解压出一个包含内容的子目录。
+                    # 我们需要找到实际包含漫画文件的那个目录。
+                    extracted_items = list(temp_extract_path.iterdir())
+                    if len(extracted_items) == 1 and extracted_items[0].is_dir():
+                        comic_source_dir = extracted_items[0]
+                        logging.info(f"Content found in sub-directory: {comic_source_dir.name}")
+                    else:
+                        comic_source_dir = temp_extract_path
+                        logging.info("Content found directly in extraction root.")
 
-                # --- Move CBZ file (if applicable) ---
-                if 'ehentai-daemon' in output_dir: # Check if the specific output logic applies
-                    try:
-                        # Construct CBZ filename
-                        cbz_filename = f"{root_path.name}.cbz"
+                    # 调用你现有的核心处理函数 process_comic_folder
+                    # 注意：这里的 `source_dir` 参数只是为了计算相对路径，我们传入解压的临时目录的父目录
+                    process_comic_folder(comic_source_dir, comic_source_dir.parent, target_dir, quality, 
+                                         max_resolution, image_format, preset, color_depth, organize_by_date)
 
-                        # Construct source CBZ path (potentially with date structure)
-                        if organize_by_date:
-                            # For finding the source file, we need to use get_comic_date
-                            comic_date = get_comic_date(target_finished_path)
-                            year = comic_date.strftime('%Y')
-                            month = comic_date.strftime('%m')
-                            source_cbz_path = target_dir / year / month / cbz_filename
-                            final_dest_dir = Path("/mnt/synology/res/komga/Doujinsh-Lib-Era/") / year / month
-                        else:
-                            source_cbz_path = target_dir / cbz_filename
-                            final_dest_dir = Path("/mnt/synology/res/komga/Doujinsh-Lib-Era/")
+                    logging.info(f"Successfully processed content from {targz_path.name}")
+                    
+                    # 如果配置了处理后删除，则删除原始的 .tar.gz 文件
+                    if delete_source_targz:
+                        try:
+                            targz_path.unlink()
+                            logging.info(f"Deleted source archive: {targz_path.name}")
+                        except OSError as e:
+                            logging.error(f"Failed to delete source archive {targz_path.name}: {e}")
+                            
+                except Exception as e:
+                    logging.error(f"An error occurred while processing archive {targz_path.name}: {e}")
+                    # 可选：如果处理失败，可以将失败的文件移动到错误目录而不是删除
+                    # error_dir = source_dir / 'failed'
+                    # error_dir.mkdir(exist_ok=True)
+                    # shutil.move(targz_path, error_dir / targz_path.name)
+                    continue # 继续处理下一个文件
+            
+            # --- 不再需要移动源文件夹或CBZ文件的逻辑 ---
+            # 因为CBZ文件在 process_comic_folder 中已经直接生成到了最终的 output_dir。
+            # 原始的tar.gz已被处理和（可选）删除。
 
-                        final_cbz_path = final_dest_dir / cbz_filename
-
-                        if source_cbz_path.exists():
-                            final_dest_dir.mkdir(parents=True, exist_ok=True)
-                            shutil.move(str(source_cbz_path), final_cbz_path)
-                            logging.info(f"Moved CBZ {source_cbz_path} to {final_cbz_path}")
-                        else:
-                            logging.warning(f"CBZ file {source_cbz_path} not found for moving.")
-
-                    except Exception as e:
-                        logging.error(f"Error moving CBZ for {root_path.name}: {e}")
-
-            run_count += 1
-            scan_needed = True # Set flag to scan after this batch
-            logging.info(f"Gallery info conversion run {run_count} completed for {len(processed_roots)} folders.")
-            # Removed time.sleep here, will sleep at the start of the loop if nothing is found
-
-    else: # Handle case without --gallery_info
-        dir_comb = get_img_dir_comb(source_dir)
-        if not dir_comb:
-            logging.info("No image folders found to process.")
-            return # Exit if nothing to do
-
-        submit_dir_comb(dir_comb, source_dir, target_dir, quality,
-                        max_resolution, image_format, preset, max_workers, color_depth, organize_by_date) # Pass organize_by_date
-        # Note: CBZ moving logic specific to 'ehentai-daemon' is only in the gallery_info loop
-
+        run_count += 1
+        scan_needed = True # 标记在下一轮空闲时需要扫描
+        logging.info(f"Processing run {run_count} completed for {len(targz_files_to_process)} archive(s).")
+        # 处理完一批后立即开始下一轮扫描，而不是等待
 
 if __name__ == "__main__":
     import argparse
@@ -535,6 +538,8 @@ if __name__ == "__main__":
                         help="The input directory containing comic folders.")
     parser.add_argument("output_dir", type=str,
                         help="The output directory to save the CBZ files.")
+    parser.add_argument("--delete_source_targz", action='store_true', default=True,
+                        help="Delete the original .tar.gz file after successful processing.")
     parser.add_argument("--quality", type=int, default=35,
                         help="CRF/quality value for AVIF/WebP conversion.")
     parser.add_argument("--max_resolution", type=int,
@@ -555,9 +560,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    logging.info("Starting comic archive conversion process...")
     try:
         main(args.input_dir, args.output_dir, args.quality, args.max_resolution,
-             args.format, args.preset, args.max_workers, args.gallery_info, args.color_depth, args.organize_by_date)
-        logging.info("Comic folder conversion process completed successfully.")
+             args.format, args.preset, args.max_workers, args.gallery_info, args.color_depth, args.organize_by_date, args.delete_source_targz)
+        logging.info("Comic archive conversion process finished or stopped.")
     except Exception as e:
-        logging.error(f"An error occurred during the conversion process: {e}")
+        error_message = traceback.format_exc()
+        logging.error(f"A critical error occurred: {e}\n{error_message}")

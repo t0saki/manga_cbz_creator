@@ -194,12 +194,32 @@ def process_image(filepath, source_dir, target_dir, quality, max_resolution, ima
             if color_depth == 8:
                 pix_fmt = 'yuv420p'
             elif color_depth == 10:
-                pix_fmt = 'yuv420p10le'
-            elif color_depth == 12:
-                pix_fmt = 'yuv420p12'
+                pix_fmt = 'yuv444p10le'
+            else:
+                raise NotImplementedError()
 
-            cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libsvtav1", "-usage", "allintra", "-pix_fmt", pix_fmt, "-crf", str(
-                quality), "-preset", "1", "-still-picture", "1", "-threads", "1", str(target_path), "-cpu-used", "0", "-y", "-hide_banner", "-loglevel", "error"]
+            # 假设你在 K8s 里的 Pod CPU Limit 是 1 或 2，这里将逻辑核显式限制为 1
+            svt_params = "tune=iq:enable-overlays=0:logical-processors=1:pin=1" 
+            # 如果你追求 4.0 带来的极速编码吞吐，改成 "tune=3:enable-overlays=0:logical-processors=1:pin=1"
+
+            cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(filepath),
+                "-vf", f"scale={target_width}:{target_height}:flags=lanczos+accurate_rnd,format={pix_fmt}",
+                "-c:v", "libsvtav1",
+                "-usage", "allintra",
+                "-crf", str(quality),
+                "-preset", "4",
+                "-svtav1-params", svt_params,
+                # AVIF/JPEG 标准的全色域，外加明确的色彩空间元数据防止前端偏色
+                "-color_range", "pc", 
+                "-color_primaries", "bt709", 
+                "-color_trc", "iec61966-2-1", 
+                "-colorspace", "bt709",
+                "-still-picture", "1",
+                str(target_path)
+            ]
+            
         elif image_format == 'webp':
             cmd = ["ffmpeg", "-i", str(filepath), "-vf", f"scale={target_width}:{target_height}", "-c:v", "libwebp", "-lossless", "0", "-compression_level", "6", "-quality", str(
                 quality), "-preset", preset, "-threads", "1", str(target_path), "-y", "-hide_banner", "-loglevel", "error"]
